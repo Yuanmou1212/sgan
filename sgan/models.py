@@ -4,7 +4,7 @@ import torch.nn as nn
 
 def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
     layers = []
-    for dim_in, dim_out in zip(dim_list[:-1], dim_list[1:]):
+    for dim_in, dim_out in zip(dim_list[:-1], dim_list[1:]):  # 循环！ [:-1]除了最后一个元素， [1:]除了第一个元素 =》 [a,b][b,c] => zip 对应位置构成元组 (a,b)(b,c)
         layers.append(nn.Linear(dim_in, dim_out))
         if batch_norm:
             layers.append(nn.BatchNorm1d(dim_out))
@@ -45,7 +45,7 @@ class Encoder(nn.Module):
 
         self.spatial_embedding = nn.Linear(2, embedding_dim)
 
-    def init_hidden(self, batch):
+    def init_hidden(self, batch):  # 初始化hidden state
         return (
             torch.zeros(self.num_layers, batch, self.h_dim).cuda(),
             torch.zeros(self.num_layers, batch, self.h_dim).cuda()
@@ -59,15 +59,15 @@ class Encoder(nn.Module):
         - final_h: Tensor of shape (self.num_layers, batch, self.h_dim)
         """
         # Encode observed Trajectory
-        batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.view(-1, 2))
+        batch = obs_traj.size(1)    # 这么做因为每个batch 长短不同，一个场景的人数不一样。
+        obs_traj_embedding = self.spatial_embedding(obs_traj.view(-1, 2))  # 压成（obs_len*batch,2）
         obs_traj_embedding = obs_traj_embedding.view(
-            -1, batch, self.embedding_dim
+            -1, batch, self.embedding_dim    # 得到（obs_len, batch,dim）
         )
         state_tuple = self.init_hidden(batch)
         output, state = self.encoder(obs_traj_embedding, state_tuple)
-        final_h = state[0]
-        return final_h
+        final_h = state[0]  # （h，c） => hidden state
+        return final_h # tensor(1*num_layers,N(batch),H_out(hidden size))
 
 
 class Decoder(nn.Module):
@@ -134,28 +134,28 @@ class Decoder(nn.Module):
         """
         batch = last_pos.size(0)
         pred_traj_fake_rel = []
-        decoder_input = self.spatial_embedding(last_pos_rel)
-        decoder_input = decoder_input.view(1, batch, self.embedding_dim)
+        decoder_input = self.spatial_embedding(last_pos_rel) # 只有两个维度的位置信息进入LSTM前都被embedding过
+        decoder_input = decoder_input.view(1, batch, self.embedding_dim) # 因为LSTM 输入要3个维度
 
         for _ in range(self.seq_len):
             output, state_tuple = self.decoder(decoder_input, state_tuple)
             rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
-            curr_pos = rel_pos + last_pos
+            curr_pos = rel_pos + last_pos # 算相对（基于每个点自己的相对），加回绝对参数上
 
-            if self.pool_every_timestep:
-                decoder_h = state_tuple[0]
+            if self.pool_every_timestep:  # 预测的时候每一步都pool， global info
+                decoder_h = state_tuple[0] # hidden state
                 pool_h = self.pool_net(decoder_h, seq_start_end, curr_pos)
                 decoder_h = torch.cat(
                     [decoder_h.view(-1, self.h_dim), pool_h], dim=1)
-                decoder_h = self.mlp(decoder_h)
-                decoder_h = torch.unsqueeze(decoder_h, 0)
-                state_tuple = (decoder_h, state_tuple[1])
+                decoder_h = self.mlp(decoder_h) #把 特征的维度缩放回去
+                decoder_h = torch.unsqueeze(decoder_h, 0) 
+                state_tuple = (decoder_h, state_tuple[1]) # 迭代重建state tuple（hiddnen_state,cell_state）
 
             embedding_input = rel_pos
 
             decoder_input = self.spatial_embedding(embedding_input)
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
-            pred_traj_fake_rel.append(rel_pos.view(batch, -1))
+            pred_traj_fake_rel.append(rel_pos.view(batch, -1)) 
             last_pos = curr_pos
 
         pred_traj_fake_rel = torch.stack(pred_traj_fake_rel, dim=0)
@@ -175,7 +175,7 @@ class PoolHiddenNet(nn.Module):
         self.bottleneck_dim = bottleneck_dim
         self.embedding_dim = embedding_dim
 
-        mlp_pre_dim = embedding_dim + h_dim
+        mlp_pre_dim = embedding_dim + h_dim  # ? 为什么pool 也需要输入 embedding？因为要把relative仅有2个维度的参数 经过MLP 得到多维度的特征，再与hidden state 融合。
         mlp_pre_pool_dims = [mlp_pre_dim, 512, bottleneck_dim]
 
         self.spatial_embedding = nn.Linear(2, embedding_dim)
@@ -191,42 +191,42 @@ class PoolHiddenNet(nn.Module):
         -tensor: 2D tensor of any shape
         -num_reps: Number of times to repeat each row
         Outpus:
-        -repeat_tensor: Repeat each row such that: R1, R1, R2, R2
+        -repeat_tensor: Repeat each row such that: R1, R1, R2, R2    # 每一行重复 num_reps 次
         """
         col_len = tensor.size(1)
-        tensor = tensor.unsqueeze(dim=1).repeat(1, num_reps, 1)
-        tensor = tensor.view(-1, col_len)
+        tensor = tensor.unsqueeze(dim=1).repeat(1, num_reps, 1)  # (原始行数, num_reps, col_len)
+        tensor = tensor.view(-1, col_len) # (原始行数*num_reps,col_len) , 根据view的特性，原始行数个（num_reps,col_len）tensor 堆叠起来。
         return tensor
 
     def forward(self, h_states, seq_start_end, end_pos):
         """
         Inputs:
-        - h_states: Tensor of shape (num_layers, batch, h_dim)
-        - seq_start_end: A list of tuples which delimit sequences within batch
+        - h_states: Tensor of shape (num_layers, batch, h_dim)  # output of encoder LSTM
+        - seq_start_end: A list of tuples which delimit sequences within batch  # 每个tuple 说明哪几个人在同一个场景
         - end_pos: Tensor of shape (batch, 2)
         Output:
         - pool_h: Tensor of shape (batch, bottleneck_dim)
         """
         pool_h = []
         for _, (start, end) in enumerate(seq_start_end):
-            start = start.item()
+            start = start.item() #?
             end = end.item()
-            num_ped = end - start
-            curr_hidden = h_states.view(-1, self.h_dim)[start:end]
-            curr_end_pos = end_pos[start:end]
+            num_ped = end - start 
+            curr_hidden = h_states.view(-1, self.h_dim)[start:end]  # （num_layer*batch,h_dim）=》（batch_i,h_dim） 通常num_layer =1 只用一层LSTM 的情况
+            curr_end_pos = end_pos[start:end]       # 即 start 和end 将 大batch 拆成了小batch！
             # Repeat -> H1, H2, H1, H2
-            curr_hidden_1 = curr_hidden.repeat(num_ped, 1)
+            curr_hidden_1 = curr_hidden.repeat(num_ped, 1)         #       这个场景有多少人就复制多少次。 (2,h_dim)=>(4,h_dim), (3,h_dim)=>(9,h_dim)
             # Repeat position -> P1, P2, P1, P2
             curr_end_pos_1 = curr_end_pos.repeat(num_ped, 1)
             # Repeat position -> P1, P1, P2, P2
-            curr_end_pos_2 = self.repeat(curr_end_pos, num_ped)
-            curr_rel_pos = curr_end_pos_1 - curr_end_pos_2
+            curr_end_pos_2 = self.repeat(curr_end_pos, num_ped)  # P1,P1,P1,P2,P2,P2,P3,P3,P3 如果场景有3人的花
+            curr_rel_pos = curr_end_pos_1 - curr_end_pos_2       # P1-P1, P2-P1, P3-P1, P2-P1, P2-P2, P2-P3, P3-P1, P3-P2, P3-P3 # 确实遍历的
             curr_rel_embedding = self.spatial_embedding(curr_rel_pos)
-            mlp_h_input = torch.cat([curr_rel_embedding, curr_hidden_1], dim=1)
-            curr_pool_h = self.mlp_pre_pool(mlp_h_input)
-            curr_pool_h = curr_pool_h.view(num_ped, num_ped, -1).max(1)[0]
-            pool_h.append(curr_pool_h)
-        pool_h = torch.cat(pool_h, dim=0)
+            mlp_h_input = torch.cat([curr_rel_embedding, curr_hidden_1], dim=1)  # 相对位置 ， hidden state（重复了num次，为了dim0相同） 的拼在一起。=》增加在feature的维度上 （num*batch,h_dim+2）
+            curr_pool_h = self.mlp_pre_pool(mlp_h_input)  ## MLP before pool ， 真正的pool 就是下面一行对每个特征只留一个最大值的max操作，维度1代表与其他人对比的特征。
+            curr_pool_h = curr_pool_h.view(num_ped, num_ped, -1).max(1)[0]    # 人数和batch 其实是一样的，因为每个batch就是按scene的人数来归类的，max(1) reduce dim=1，即让“列”消失，每一行中选最大值，列数就坍缩成1了。 [0]只返回最大值不反回索引
+            pool_h.append(curr_pool_h)  # 即按dim1坍缩成1为目的，在dim2特征维度的同一index时，比较dim1 不同值的最大值，（直观理解成（如果还没通过MLP），同一个人的和其他人的相对位置中的最大值！，而变化后，就是距离信息的feature中的最大值） 
+        pool_h = torch.cat(pool_h, dim=0)   # list of [batch_i,mid_dim] , 得到 [batch_1+batch_2+...=batch, mid_dim] 每个scene，合在一起的输出。 
         return pool_h
 
 
@@ -361,10 +361,10 @@ class TrajectoryGenerator(nn.Module):
     ):
         super(TrajectoryGenerator, self).__init__()
 
-        if pooling_type and pooling_type.lower() == 'none':
+        if pooling_type and pooling_type.lower() == 'none':  # 转换全小写， 先检查Pooling_type 是不是非空（即不是None，“这不是字符串”）， 如果是，再检查全小写的字符是不是 ‘none’
             pooling_type = None
 
-        self.obs_len = obs_len
+        self.obs_len = obs_len 
         self.pred_len = pred_len
         self.mlp_dim = mlp_dim
         self.encoder_h_dim = encoder_h_dim
@@ -376,7 +376,7 @@ class TrajectoryGenerator(nn.Module):
         self.noise_mix_type = noise_mix_type
         self.pooling_type = pooling_type
         self.noise_first_dim = 0
-        self.pool_every_timestep = pool_every_timestep
+        self.pool_every_timestep = pool_every_timestep # 这个应该是S-LSTM 用的办法S Pooling，每个timestep都pool。
         self.bottleneck_dim = 1024
 
         self.encoder = Encoder(
@@ -429,13 +429,13 @@ class TrajectoryGenerator(nn.Module):
 
         # Decoder Hidden
         if pooling_type:
-            input_dim = encoder_h_dim + bottleneck_dim
+            input_dim = encoder_h_dim + bottleneck_dim    # ？？Q1 bottleneck_dim  is what?
         else:
             input_dim = encoder_h_dim
 
         if self.mlp_decoder_needed():
             mlp_decoder_context_dims = [
-                input_dim, mlp_dim, decoder_h_dim - self.noise_first_dim
+                input_dim, mlp_dim, decoder_h_dim - self.noise_first_dim  # 这个差值？default =0,先不管。
             ]
 
             self.mlp_decoder_context = make_mlp(
@@ -499,20 +499,20 @@ class TrajectoryGenerator(nn.Module):
         - obs_traj_rel: Tensor of shape (obs_len, batch, 2)
         - seq_start_end: A list of tuples which delimit sequences within batch.
         - user_noise: Generally used for inference when you want to see
-        relation between different types of noise and outputs.
+        relation between different types of noise and outputs.    # ？就是通过改这个来输出不同结果？
         Output:
         - pred_traj_rel: Tensor of shape (self.pred_len, batch, 2)
         """
         batch = obs_traj_rel.size(1)
         # Encode seq
-        final_encoder_h = self.encoder(obs_traj_rel)
+        final_encoder_h = self.encoder(obs_traj_rel)  # 用的位置相对值进encoder  ,# output tensor(1*num_layers,N(batch),H_out(hidden size))
         # Pool States
         if self.pooling_type:
-            end_pos = obs_traj[-1, :, :]
+            end_pos = obs_traj[-1, :, :]        # 最后一个 timestep 的数据
             pool_h = self.pool_net(final_encoder_h, seq_start_end, end_pos)
             # Construct input hidden states for decoder
             mlp_decoder_context_input = torch.cat(
-                [final_encoder_h.view(-1, self.encoder_h_dim), pool_h], dim=1)
+                [final_encoder_h.view(-1, self.encoder_h_dim), pool_h], dim=1)   # reduce it as 2 dimension tensor(N,H_out), 然后在dim=1， H_out 的维度上concatenate （N，H_encoder+H_pool）
         else:
             mlp_decoder_context_input = final_encoder_h.view(
                 -1, self.encoder_h_dim)
@@ -524,14 +524,14 @@ class TrajectoryGenerator(nn.Module):
             noise_input = mlp_decoder_context_input
         decoder_h = self.add_noise(
             noise_input, seq_start_end, user_noise=user_noise)
-        decoder_h = torch.unsqueeze(decoder_h, 0)
+        decoder_h = torch.unsqueeze(decoder_h, 0)  # when noise_first_dim default = 0, add_noise have no use.
 
         decoder_c = torch.zeros(
             self.num_layers, batch, self.decoder_h_dim
-        ).cuda()
+        ).cuda()                         # decoder 的LSTM 需要初始化cell state
 
         state_tuple = (decoder_h, decoder_c)
-        last_pos = obs_traj[-1]
+        last_pos = obs_traj[-1]          # 观察到轨迹的最后一个点，作为Decoder的输入
         last_pos_rel = obs_traj_rel[-1]
         # Predict Trajectory
 
@@ -543,7 +543,7 @@ class TrajectoryGenerator(nn.Module):
         )
         pred_traj_fake_rel, final_decoder_h = decoder_out
 
-        return pred_traj_fake_rel
+        return pred_traj_fake_rel 
 
 
 class TrajectoryDiscriminator(nn.Module):

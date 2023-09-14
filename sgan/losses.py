@@ -61,8 +61,8 @@ def l2_loss(pred_traj, pred_traj_gt, loss_mask, random=0, mode='average'):
     - loss: l2 loss depending on mode
     """
     seq_len, batch, _ = pred_traj.size()
-    loss = (loss_mask.unsqueeze(dim=2) *
-            (pred_traj_gt.permute(1, 0, 2) - pred_traj.permute(1, 0, 2))**2)
+    loss = (loss_mask.unsqueeze(dim=2) *           # 理论上因为ground truth里面有些 seq 没要，所以要有个loss_mask 专门给gt 而不是pred
+            (pred_traj_gt.permute(1, 0, 2) - pred_traj.permute(1, 0, 2))**2)          # 但其实不需要 ，因为都是dataloader的batch出来的，gt也是对应值，不对应的部分根本没传出来
     if mode == 'sum':
         return torch.sum(loss)
     elif mode == 'average':
@@ -83,7 +83,7 @@ def displacement_error(pred_traj, pred_traj_gt, consider_ped=None, mode='sum'):
     - loss: gives the eculidian displacement error
     """
     seq_len, _, _ = pred_traj.size()
-    loss = pred_traj_gt.permute(1, 0, 2) - pred_traj.permute(1, 0, 2)
+    loss = pred_traj_gt.permute(1, 0, 2) - pred_traj.permute(1, 0, 2)       # 那为什么这里就不要 loss mask 了呢？ 如解释
     loss = loss**2
     if consider_ped is not None:
         loss = torch.sqrt(loss.sum(dim=2)).sum(dim=1) * consider_ped
